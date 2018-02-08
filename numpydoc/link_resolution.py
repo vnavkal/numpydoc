@@ -1,46 +1,84 @@
-def linkcode_resolve(domain, info):
-    """
-    Determine the URL corresponding to Python object
-    """
-    if domain != 'py':
-        return None
+import inspect
+import os
+import sys
 
-    modname = info['module']
-    fullname = info['fullname']
 
-    submod = sys.modules.get(modname)
-    if submod is None:
-        return None
+def _locate(module_name, obj_name):
+    class_name = obj_name.split('.')[0]
+    if type(class_name) != str:
+        # Python 2 only
+        class_name = class_name.encode('utf-8')
+    module = __import__(module_name, fromlist=[class_name])
+    obj = getattr(module, obj_name)
 
-    obj = submod
-    for part in fullname.split('.'):
+    try:
+        path = inspect.getsourcefile(obj)
+    except Exception:
+        path = None
+    if not path:
         try:
-            obj = getattr(obj, part)
+            path = inspect.getsourcefile(sys.modules[obj.__module__])
         except Exception:
-            return None
+            path = None
+    if not path:
+        return
+
+    try:
+        source, start = inspect.getsourcelines(obj)
+        end = start - len(source) + 1
+    except Exception:
+        start = None
+        end = None
+
+    return path, start, end
+
+
+def _linkcode_resolve(domain, info, package, url_fmt, revision):
+    """Determine a link to online source for a class/method/function
+
+    This is called by sphinx.ext.linkcode
+
+    An example with a long-untouched module that everyone has
+    >>> _linkcode_resolve('py', {'module': 'tty',
+    ...                          'fullname': 'setraw'},
+    ...                   package='tty',
+    ...                   url_fmt='http://hg.python.org/cpython/file/'
+    ...                           '{revision}/Lib/{package}/{path}#L{lineno}',
+    ...                   revision='xxxx')
+    'http://hg.python.org/cpython/file/xxxx/Lib/tty/tty.py#L18'
+    """
+
+    if revision is None:
+        return
+    if domain not in ('py', 'pyx'):
+        return
+    if not info.get('module') or not info.get('fullname'):
+        return
+
+    class_name = info['fullname'].split('.')[0]
+    if type(class_name) != str:
+        # Python 2 only
+        class_name = class_name.encode('utf-8')
+    module = __import__(info['module'], fromlist=[class_name])
+    obj = attrgetter(info['fullname'])(module)
 
     try:
         fn = inspect.getsourcefile(obj)
     except Exception:
         fn = None
     if not fn:
-        return None
+        try:
+            fn = inspect.getsourcefile(sys.modules[obj.__module__])
+        except Exception:
+            fn = None
+    if not fn:
+        return
 
+    fn = os.path.relpath(fn,
+                         start=os.path.dirname(__import__(package).__file__))
     try:
-        source, lineno = inspect.getsourcelines(obj)
+        lineno = inspect.getsourcelines(obj)[1]
     except Exception:
-        lineno = None
-
-    if lineno:
-        linespec = "#L%d-L%d" % (lineno, lineno + len(source) - 1)
-    else:
-        linespec = ""
-
-    fn = relpath(fn, start=dirname(numpy.__file__))
-
-    if 'dev' in numpy.__version__:
-        return "http://github.com/numpy/numpy/blob/master/numpy/%s%s" % (
-           fn, linespec)
-    else:
-        return "http://github.com/numpy/numpy/blob/v%s/numpy/%s%s" % (
-           numpy.__version__, fn, linespec)
+        lineno = ''
+    return url_fmt.format(revision=revision, package=package,
+                          path=fn, lineno=lineno)
